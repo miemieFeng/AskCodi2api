@@ -1,0 +1,20 @@
+# Database
+data.db
+data.db.backup
+*.db
+*.db-shm
+*.db-wal
+
+# Claude
+.claude/
+.mcp.json
+
+# Binary
+askcodi-go
+
+# macOS
+.DS_Store
+
+# Go
+*.exe
+*.test

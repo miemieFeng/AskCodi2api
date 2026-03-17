@@ -21,7 +21,8 @@ import (
 )
 
 const (
-	GptmailAPI      = "https://mail.chatgpt.org.uk"
+	GptmailAPI      = "https://mail-gateway-api.jdyang.workers.dev"  // Cloudflare Email Worker
+	CFMailDomain    = "miemie.hk"
 	SupabaseURL     = "https://umnszlghpeqeuclzpjoy.supabase.co"
 	AskCodiURL      = "https://www.askcodi.com"
 	SupabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVtbnN6bGdocGVxZXVjbHpwam95Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTI2ODM0MDMsImV4cCI6MjA2ODI1OTQwM30.YRR7YquYqzZoUbqviTAJA5cinR0rI1pDNeItcmZjP6E"
@@ -116,26 +117,11 @@ func randomHex(n int) string {
 // --- Registration Steps ---
 
 func (rs *RegistrationService) generateEmail(client *http.Client, apiKey string) (string, error) {
-	req, _ := http.NewRequest("GET", GptmailAPI+"/api/generate-email", nil)
-	req.Header.Set("X-API-Key", apiKey)
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("gptmail request: %w", err)
-	}
-	defer resp.Body.Close()
-	var data map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return "", fmt.Errorf("gptmail invalid JSON: %w", err)
-	}
-	d, ok := data["data"].(map[string]interface{})
-	if !ok {
-		msg := "Unknown Error"
-		if m, ok := data["message"].(string); ok {
-			msg = m
-		}
-		return "", fmt.Errorf("gptmail API failed: %s", msg)
-	}
-	email, _ := d["email"].(string)
+	// Generate random email using our own domain (Cloudflare Email Worker)
+	randBytes := make([]byte, 8)
+	rand.Read(randBytes)
+	prefix := fmt.Sprintf("askcodi-%x", randBytes)
+	email := prefix + "@" + CFMailDomain
 	return email, nil
 }
 
@@ -167,10 +153,12 @@ func (rs *RegistrationService) signup(client *http.Client, email, password, code
 func (rs *RegistrationService) waitForConfirmEmail(client *http.Client, email, apiKey string) (string, error) {
 	urlRe := regexp.MustCompile(`https?://[^\s"<>\]]+`)
 
-	for i := 0; i < 12; i++ { // 60s / 5s = 12 iterations
+	for i := 0; i < 18; i++ { // 90s / 5s = 18 iterations
 		time.Sleep(5 * time.Second)
-		req, _ := http.NewRequest("GET", GptmailAPI+"/api/emails?email="+email, nil)
-		req.Header.Set("X-API-Key", apiKey)
+		// Use Cloudflare Email Worker API
+		reqURL := GptmailAPI + "/messages?address=" + url.QueryEscape(email)
+		req, _ := http.NewRequest("GET", reqURL, nil)
+		req.Header.Set("Authorization", "Bearer " + apiKey)
 		resp, err := client.Do(req)
 		if err != nil {
 			continue
@@ -180,17 +168,16 @@ func (rs *RegistrationService) waitForConfirmEmail(client *http.Client, email, a
 		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 			continue
 		}
-		d, _ := data["data"].(map[string]interface{})
-		emails, _ := d["emails"].([]interface{})
-		if len(emails) == 0 {
+		messages, _ := data["messages"].([]interface{})
+		if len(messages) == 0 {
 			continue
 		}
-		emailObj, _ := emails[0].(map[string]interface{})
+		emailObj, _ := messages[0].(map[string]interface{})
 		body := ""
-		if c, ok := emailObj["content"].(string); ok && c != "" {
-			body = c
-		} else if h, ok := emailObj["html_content"].(string); ok {
-			body = h
+		if t, ok := emailObj["text"].(string); ok && t != "" {
+			body = t
+		} else if h, ok := emailObj["html"].(string); ok {
+			body = strings.ReplaceAll(h, "&amp;", "&")
 		}
 		urls := urlRe.FindAllString(body, -1)
 		for _, u := range urls {
